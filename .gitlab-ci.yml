@@ -1,0 +1,10 @@
+check:
+  image: ghcr.io/astral-sh/uv:0.12-python3.14-bookworm-slim
+  variables:
+    UV_LINK_MODE: copy
+  script:
+    - uv sync --locked
+    - uv run --locked ruff check .
+    - uv run --locked ruff format --check .
+    - uv run --locked pyright
+    - uv run --locked pytest

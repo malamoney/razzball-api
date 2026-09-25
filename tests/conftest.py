@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 
 import pytest
 from flask import Flask
@@ -130,11 +130,17 @@ def make_settings(**overrides: object) -> Settings:
 type AppFactory = Callable[..., Flask]
 
 
-def seed_databases(app: Flask) -> None:
+def seed_databases(app: Flask, *, skip: Collection[str | None] = ()) -> None:
+    """Seed each bind (None is baseball) except those listed in ``skip``."""
+    seeders = {
+        None: _seed_baseball,
+        "basketball": _seed_basketball,
+        "football": _seed_football,
+    }
     with app.app_context():
-        _seed_baseball(db.engines[None])
-        _seed_basketball(db.engines["basketball"])
-        _seed_football(db.engines["football"])
+        for bind, seed in seeders.items():
+            if bind not in skip:
+                seed(db.engines[bind])
 
 
 @pytest.fixture
@@ -142,11 +148,13 @@ def make_app() -> Iterator[AppFactory]:
     """Build seeded apps from Settings overrides; dispose their engines afterwards."""
     created: list[Flask] = []
 
-    def factory(*, seed: bool = True, **overrides: object) -> Flask:
+    def factory(
+        *, seed: bool = True, unseeded: Collection[str | None] = (), **overrides: object
+    ) -> Flask:
         app = create_app(make_settings(**overrides))
         created.append(app)
         if seed:
-            seed_databases(app)
+            seed_databases(app, skip=unseeded)
         return app
 
     yield factory

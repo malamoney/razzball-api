@@ -136,7 +136,8 @@ Errors always use this shape:
 | 403 | Key is inactive or its access group does not include the endpoint |
 | 404 / 405 | Unknown URL / wrong method (405 includes `Allow`) |
 | 406 | `Accept` does not include a Razzball vendor media type |
-| 500 | Database failure or result over `RAZZBALL_MAX_ROWS`. Internal details are logged, never returned. |
+| 500 | Database error other than a connection failure (e.g. a failed query), or result over `RAZZBALL_MAX_ROWS`. Internal details are logged, never returned. |
+| 503 | A database could not be reached. Includes `Retry-After: 30`, except for MySQL errors 1045 (access denied) and 1130 (host not allowed), which retrying won't fix. The log names the database, never its host or URL. |
 
 ## Development
 

@@ -14,6 +14,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from razzball_api.auth import API_KEY_HEADER
+from razzball_api.database import BASEBALL, DatabaseUnavailableError, connect
 from razzball_api.extensions import db
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def fingerprint_api_key(api_key: str | None) -> str:
 
 
 def record_request(engine: Engine, record: RequestRecord) -> None:
-    with engine.begin() as conn:
+    with connect(engine, BASEBALL) as conn:
         conn.execute(
             _INSERT_SQL,
             {
@@ -61,6 +62,7 @@ def record_request(engine: Engine, record: RequestRecord) -> None:
                 "description": record.description[:_MAX_DESCRIPTION_LENGTH],
             },
         )
+        conn.commit()
 
 
 def register_request_audit(app: Flask, *, exempt_endpoints: frozenset[str]) -> None:
@@ -79,9 +81,12 @@ def register_request_audit(app: Flask, *, exempt_endpoints: frozenset[str]) -> N
             status_code=response.status_code,
             description=response.status,
         )
+        # Losing an audit row must not turn a served response into an error.
         try:
             record_request(db.engine, record)
+        except DatabaseUnavailableError as exc:
+            # No traceback: the driver's message can include the database host.
+            logger.error("api_request_log row not written: %s", exc)
         except SQLAlchemyError:
-            # Losing an audit row must not turn a served response into an error.
             logger.exception("Failed to write api_request_log row")
         return response

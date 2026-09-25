@@ -10,7 +10,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import ArgumentError
+
 ENV_PREFIX = "RAZZBALL_"
+# SQLAlchemy backend names for URLs whose driver takes a connect_timeout.
+_MYSQL_BACKENDS = frozenset({"mysql", "mariadb"})
 
 
 class ConfigError(Exception):
@@ -35,6 +40,9 @@ class Settings:
     # Upper bound on rows returned by one projections request. Exceeding it is an
     # error rather than a silent truncation.
     max_rows: int = 20_000
+    # Seconds to wait for a MySQL server to accept a connection. PyMySQL's own
+    # default of 10s lets an unreachable database hold a worker far too long.
+    db_connect_timeout: int = 5
     extra_flask_config: Mapping[str, object] = field(default_factory=dict[str, object])
 
     def __post_init__(self) -> None:
@@ -45,10 +53,18 @@ class Settings:
         ):
             if not getattr(self, name):
                 raise ConfigError(f"{ENV_PREFIX}{name.upper()} is required")
+            try:
+                make_url(getattr(self, name))
+            except (ArgumentError, ValueError) as exc:
+                raise ConfigError(
+                    f"{ENV_PREFIX}{name.upper()} is not a valid database URL"
+                ) from exc
         if self.proxy_count < 0:
             raise ConfigError(f"{ENV_PREFIX}PROXY_COUNT must be >= 0")
         if self.max_rows < 1:
             raise ConfigError(f"{ENV_PREFIX}MAX_ROWS must be >= 1")
+        if self.db_connect_timeout < 1:
+            raise ConfigError(f"{ENV_PREFIX}DB_CONNECT_TIMEOUT must be >= 1")
         if self.log_level.upper() not in logging.getLevelNamesMapping():
             raise ConfigError(f"{ENV_PREFIX}LOG_LEVEL is not a valid log level")
         try:
@@ -81,14 +97,17 @@ class Settings:
                 "LOG_REQUESTS_TO_DATABASE", get("LOG_REQUESTS_TO_DATABASE"), True
             ),
             max_rows=_parse_int("MAX_ROWS", get("MAX_ROWS"), 20_000),
+            db_connect_timeout=_parse_int(
+                "DB_CONNECT_TIMEOUT", get("DB_CONNECT_TIMEOUT"), 5
+            ),
         )
 
     def to_flask_config(self) -> dict[str, object]:
         config: dict[str, object] = {
-            "SQLALCHEMY_DATABASE_URI": self.baseball_database_url,
+            "SQLALCHEMY_DATABASE_URI": self._engine_url(self.baseball_database_url),
             "SQLALCHEMY_BINDS": {
-                "basketball": self.basketball_database_url,
-                "football": self.football_database_url,
+                "basketball": self._engine_url(self.basketball_database_url),
+                "football": self._engine_url(self.football_database_url),
             },
             # Validate pooled connections and recycle them before MySQL's
             # wait_timeout closes them server-side.
@@ -99,6 +118,15 @@ class Settings:
         }
         config.update(self.extra_flask_config)
         return config
+
+    def _engine_url(self, raw: str) -> URL:
+        url = make_url(raw)
+        if (
+            url.get_backend_name() not in _MYSQL_BACKENDS
+            or "connect_timeout" in url.query
+        ):
+            return url
+        return url.update_query_dict({"connect_timeout": str(self.db_connect_timeout)})
 
 
 def _parse_list(raw: str | None) -> tuple[str, ...]:

@@ -23,6 +23,7 @@ def test_settings_from_env_defaults() -> None:
     assert settings.trusted_hosts == ()
     assert settings.log_requests_to_database is True
     assert settings.timezone == "America/New_York"
+    assert settings.db_connect_timeout == 5
 
 
 def test_settings_from_env_parses_values() -> None:
@@ -34,6 +35,7 @@ def test_settings_from_env_parses_values() -> None:
             "RAZZBALL_LOG_REQUESTS_TO_DATABASE": "false",
             "RAZZBALL_LOG_LEVEL": "debug",
             "RAZZBALL_MAX_ROWS": "50",
+            "RAZZBALL_DB_CONNECT_TIMEOUT": "2",
         }
     )
 
@@ -42,6 +44,7 @@ def test_settings_from_env_parses_values() -> None:
     assert settings.log_requests_to_database is False
     assert settings.log_level == "DEBUG"
     assert settings.max_rows == 50
+    assert settings.db_connect_timeout == 2
 
 
 @pytest.mark.parametrize(
@@ -54,6 +57,18 @@ def test_settings_from_env_parses_values() -> None:
         (REQUIRED_ENV | {"RAZZBALL_TIMEZONE": "Mars/Olympus"}, "TIMEZONE"),
         (REQUIRED_ENV | {"RAZZBALL_LOG_LEVEL": "LOUD"}, "LOG_LEVEL"),
         (REQUIRED_ENV | {"RAZZBALL_MAX_ROWS": "0"}, "MAX_ROWS"),
+        (REQUIRED_ENV | {"RAZZBALL_DB_CONNECT_TIMEOUT": "0"}, "DB_CONNECT_TIMEOUT"),
+        (REQUIRED_ENV | {"RAZZBALL_DB_CONNECT_TIMEOUT": "-3"}, "DB_CONNECT_TIMEOUT"),
+        (REQUIRED_ENV | {"RAZZBALL_DB_CONNECT_TIMEOUT": "fast"}, "DB_CONNECT_TIMEOUT"),
+        (
+            REQUIRED_ENV | {"RAZZBALL_FOOTBALL_DATABASE_URL": "not a url"},
+            "RAZZBALL_FOOTBALL_DATABASE_URL is not a valid",
+        ),
+        (
+            REQUIRED_ENV
+            | {"RAZZBALL_BASKETBALL_DATABASE_URL": "mysql+pymysql://u:pw@h:port/db"},
+            "RAZZBALL_BASKETBALL_DATABASE_URL is not a valid",
+        ),
     ],
 )
 def test_invalid_settings_fail_fast(env: dict[str, str], message: str) -> None:
@@ -195,3 +210,54 @@ def test_proxy_fix_uses_forwarded_client_address_only_when_configured(
     proxied = make_app(proxy_count=1)
     proxied.test_client().get("/nba/projections/all", headers=headers)
     assert request_log_rows(proxied)[-1]["remote_addr"] == "203.0.113.9"
+
+
+# --- database connect timeout -------------------------------------------------
+
+MYSQL_URLS = {
+    "baseball_database_url": "mysql+pymysql://api:pw@db.invalid/razzball_wp2012",
+    "basketball_database_url": "mysql+pymysql://api:pw@db.invalid/razzball_basketball",
+    "football_database_url": "mysql+pymysql://api:pw@db.invalid/razzball_football",
+}
+
+
+def connect_timeouts(app: Flask) -> dict[str | None, str | tuple[str, ...] | None]:
+    with app.app_context():
+        return {
+            bind: engine.url.query.get("connect_timeout")
+            for bind, engine in db.engines.items()
+        }
+
+
+def test_mysql_engines_get_default_connect_timeout(make_app: AppFactory) -> None:
+    app = make_app(seed=False, **MYSQL_URLS)
+
+    assert connect_timeouts(app) == {None: "5", "basketball": "5", "football": "5"}
+
+
+def test_connect_timeout_in_url_wins_over_setting(make_app: AppFactory) -> None:
+    urls = MYSQL_URLS | {
+        "football_database_url": MYSQL_URLS["football_database_url"]
+        + "?connect_timeout=30"
+    }
+    app = make_app(seed=False, db_connect_timeout=2, **urls)
+
+    assert connect_timeouts(app) == {None: "2", "basketball": "2", "football": "30"}
+
+
+def test_mariadb_url_gets_timeout_and_keeps_password(make_app: AppFactory) -> None:
+    app = make_app(
+        seed=False,
+        baseball_database_url="mariadb+pymysql://api:p%40ss@db.invalid/razzball_wp2012",
+    )
+
+    assert connect_timeouts(app)[None] == "5"
+    with app.app_context():
+        assert db.engines[None].url.password == "p@ss"
+
+
+def test_sqlite_urls_are_left_unchanged(app: Flask) -> None:
+    with app.app_context():
+        urls = {str(engine.url) for engine in db.engines.values()}
+
+    assert urls == {"sqlite://"}

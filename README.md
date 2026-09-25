@@ -38,6 +38,7 @@ value.
 | `RAZZBALL_LOG_LEVEL` | no | `INFO` | Python log level name |
 | `RAZZBALL_LOG_REQUESTS_TO_DATABASE` | no | `true` | Write one `api_request_log` row per request |
 | `RAZZBALL_MAX_ROWS` | no | `20000` | Most rows one request may return. A larger result is a 500, not a silently truncated list. |
+| `RAZZBALL_DB_CONNECT_TIMEOUT` | no | `5` | Seconds to wait for a MySQL server to accept a connection before failing the request. A `connect_timeout` already in a database URL takes precedence. |
 
 Database URLs use the PyMySQL driver, e.g.
 `mysql+pymysql://user:password@host/razzball_football`. If the database is

@@ -148,8 +148,14 @@ uv run pytest            # add --cov=razzball_api for coverage
 ```
 
 The tests run against in-memory SQLite databases seeded with the tables the API
-reads. They need no MySQL server and no credentials. CI (`.gitlab-ci.yml`) runs
-the same checks without modifying any files. To audit dependencies:
+reads. They need no MySQL server and no credentials.
+
+CI runs the same checks without modifying any files: GitHub Actions
+(`.github/workflows/ci.yml`) on every pull request and push to `main`, and
+`.gitlab-ci.yml` for GitLab. On GitHub, `main` requires a pull request whose
+`check` job passes.
+
+To audit dependencies:
 
 ```bash
 uv export --no-dev --no-emit-project --format requirements-txt > /tmp/reqs.txt

@@ -16,6 +16,7 @@ from flask import g, request
 from flask.typing import ResponseReturnValue
 from sqlalchemy import Engine, text
 
+from razzball_api.database import BASEBALL, connect
 from razzball_api.errors import ApiError
 from razzball_api.extensions import db
 
@@ -52,7 +53,7 @@ class ApiUser:
 
 
 def find_api_user(engine: Engine, api_key: str) -> ApiUser | None:
-    with engine.connect() as conn:
+    with connect(engine, BASEBALL) as conn:
         row = conn.execute(_USER_SQL, {"api_key": api_key}).one_or_none()
         if row is None:
             return None

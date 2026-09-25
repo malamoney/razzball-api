@@ -12,6 +12,8 @@ from enum import StrEnum
 
 from sqlalchemy import Engine, TextClause, text
 
+from razzball_api.database import BASEBALL, BASKETBALL, FOOTBALL, connect
+
 type ProjectionRow = dict[str, str]
 
 
@@ -36,12 +38,13 @@ _MLB_BOT_TABLES: Mapping[MlbBotView, str] = {
 
 def _fetch(
     engine: Engine,
+    database: str,
     statement: TextClause,
     params: Mapping[str, object] | None = None,
     *,
     max_rows: int,
 ) -> list[ProjectionRow]:
-    with engine.connect() as conn:
+    with connect(engine, database) as conn:
         result = conn.execute(statement, dict(params or {}))
         columns = list(result.keys())
         rows = result.fetchmany(max_rows + 1)
@@ -58,6 +61,7 @@ def mlb_daily(
 ) -> list[ProjectionRow]:
     return _fetch(
         engine,
+        BASEBALL,
         text("SELECT * FROM APISOURCE_MLB WHERE Date = :day"),
         {"day": day.isoformat()},
         max_rows=max_rows,
@@ -66,7 +70,10 @@ def mlb_daily(
 
 def mlb_bot(engine: Engine, view: MlbBotView, *, max_rows: int) -> list[ProjectionRow]:
     return _fetch(
-        engine, text(f"SELECT * FROM {_MLB_BOT_TABLES[view]}"), max_rows=max_rows
+        engine,
+        BASEBALL,
+        text(f"SELECT * FROM {_MLB_BOT_TABLES[view]}"),
+        max_rows=max_rows,
     )
 
 
@@ -75,6 +82,7 @@ def nba_daily(
 ) -> list[ProjectionRow]:
     return _fetch(
         engine,
+        BASKETBALL,
         text("SELECT * FROM nba_api_master WHERE Date = :day"),
         {"day": day.isoformat()},
         max_rows=max_rows,
@@ -82,11 +90,15 @@ def nba_daily(
 
 
 def nba_all(engine: Engine, *, max_rows: int) -> list[ProjectionRow]:
-    return _fetch(engine, text("SELECT * FROM nba_api_master"), max_rows=max_rows)
+    return _fetch(
+        engine, BASKETBALL, text("SELECT * FROM nba_api_master"), max_rows=max_rows
+    )
 
 
 def nba_rest_of_season(engine: Engine, *, max_rows: int) -> list[ProjectionRow]:
-    return _fetch(engine, text("SELECT * FROM nba_api_master_ros"), max_rows=max_rows)
+    return _fetch(
+        engine, BASKETBALL, text("SELECT * FROM nba_api_master_ros"), max_rows=max_rows
+    )
 
 
 def nfl_weekly(
@@ -94,6 +106,7 @@ def nfl_weekly(
 ) -> list[ProjectionRow]:
     return _fetch(
         engine,
+        FOOTBALL,
         text("SELECT * FROM nfl_api_master WHERE Season = :season AND Week = :week"),
         {"season": season, "week": week},
         max_rows=max_rows,

@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import pymysql
@@ -7,7 +8,7 @@ from flask import Flask, Response
 from flask.testing import FlaskClient
 
 from razzball_api.errors import unavailable_databases
-from tests.conftest import AppFactory, auth_headers
+from tests.conftest import AppFactory, auth_headers, request_log_rows
 
 NFL_WEEKLY = "/nfl/projections/weekly/2025/3"
 
@@ -16,6 +17,28 @@ def unreachable_url(tmp_path: Path) -> str:
     # SQLite cannot create a file inside a missing directory, so this fails
     # when a connection is opened, like an unreachable server, with no network.
     return f"sqlite:///{tmp_path}/missing-dir/unreachable.db"
+
+
+def mysql_refusing_app(
+    make_app: AppFactory, bind: str | None, creator: Callable[[], object]
+) -> Flask:
+    """An app whose ``bind`` (None is baseball) is a MySQL server run by ``creator``."""
+    binds: dict[str | None, object] = {
+        "basketball": "sqlite://",
+        "football": "sqlite://",
+    }
+    overrides: dict[str, object] = {}
+    if bind is None:
+        url = "mysql+pymysql://api:pw@db.invalid/razzball_wp2012"
+        overrides["baseball_database_url"] = url
+    else:
+        url = f"mysql+pymysql://api:pw@db.invalid/razzball_{bind}"
+    binds[bind] = {"url": url, "creator": creator}
+    return make_app(
+        unseeded={bind},
+        extra_flask_config={"TESTING": True, "SQLALCHEMY_BINDS": binds},
+        **overrides,
+    )
 
 
 @pytest.fixture
@@ -85,19 +108,7 @@ def test_retry_after_depends_on_mysql_error_code(
     def refuse_connection() -> object:
         raise pymysql.err.OperationalError(code, "Host 'db.internal' said no")
 
-    app = make_app(
-        unseeded={"football"},
-        extra_flask_config={
-            "TESTING": True,
-            "SQLALCHEMY_BINDS": {
-                "basketball": "sqlite://",
-                "football": {
-                    "url": "mysql+pymysql://api:pw@db.invalid/razzball_football",
-                    "creator": refuse_connection,
-                },
-            },
-        },
-    )
+    app = mysql_refusing_app(make_app, "football", refuse_connection)
 
     with caplog.at_level(logging.WARNING, logger="razzball_api"):
         response = app.test_client().get(NFL_WEEKLY, headers=auth_headers())
@@ -127,26 +138,13 @@ def test_later_request_steps_can_see_the_outage(football_down: Flask) -> None:
 def test_key_database_outage_never_logs_the_host(
     make_app: AppFactory, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # The audit step writes to the same (baseball) database after the 503.
     # PyMySQL's message names the host, so it must never reach the logs.
     def refuse_connection() -> object:
         raise pymysql.err.OperationalError(
             2003, "Can't connect to MySQL server on 'db.internal' (timed out)"
         )
 
-    baseball_url = "mysql+pymysql://api:pw@db.invalid/razzball_wp2012"
-    app = make_app(
-        unseeded={None},
-        baseball_database_url=baseball_url,
-        extra_flask_config={
-            "TESTING": True,
-            "SQLALCHEMY_BINDS": {
-                None: {"url": baseball_url, "creator": refuse_connection},
-                "basketball": "sqlite://",
-                "football": "sqlite://",
-            },
-        },
-    )
+    app = mysql_refusing_app(make_app, None, refuse_connection)
 
     with caplog.at_level(logging.WARNING, logger="razzball_api"):
         response = app.test_client().get(NFL_WEEKLY, headers=auth_headers())
@@ -157,3 +155,38 @@ def test_key_database_outage_never_logs_the_host(
     assert all(r.exc_info is None for r in errors)
     assert all("baseball database unavailable" in r.getMessage() for r in errors)
     assert "db.internal" not in caplog.text
+
+
+def test_audit_is_skipped_when_key_database_is_down(
+    make_app: AppFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    attempts: list[int] = []
+
+    def refuse_connection() -> object:
+        attempts.append(1)
+        raise pymysql.err.OperationalError(2003, "Can't connect to 'db.internal'")
+
+    app = mysql_refusing_app(make_app, None, refuse_connection)
+    client = app.test_client()
+
+    with caplog.at_level(logging.WARNING, logger="razzball_api.audit"):
+        for _ in range(2):
+            assert client.get(NFL_WEEKLY, headers=auth_headers()).status_code == 503
+
+    # One connection attempt per request: the audit step does not try again.
+    assert len(attempts) == 2
+    audit_records = [r for r in caplog.records if r.name == "razzball_api.audit"]
+    assert [r.getMessage() for r in audit_records] == [
+        "api_request_log row skipped: baseball database unavailable"
+    ] * 2
+    assert all(r.exc_info is None for r in audit_records)
+
+
+def test_audit_is_written_when_only_another_database_is_down(
+    football_down: Flask,
+) -> None:
+    football_down.test_client().get(NFL_WEEKLY, headers=auth_headers())
+
+    [row] = request_log_rows(football_down)
+    assert row["status_code"] == 503
+    assert row["uri"] == NFL_WEEKLY

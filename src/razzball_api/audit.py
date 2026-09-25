@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from razzball_api.auth import API_KEY_HEADER
 from razzball_api.database import BASEBALL, DatabaseUnavailableError, connect
+from razzball_api.errors import unavailable_databases
 from razzball_api.extensions import db
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,12 @@ def register_request_audit(app: Flask, *, exempt_endpoints: frozenset[str]) -> N
     @app.after_request
     def audit_request(response: Response) -> Response:
         if request.endpoint in exempt_endpoints:
+            return response
+        if BASEBALL in unavailable_databases():
+            # Already failed once this request; a second try doubles the wait.
+            logger.warning(
+                "api_request_log row skipped: %s database unavailable", BASEBALL
+            )
             return response
         record = RequestRecord(
             api_user_id=g.get("api_user_id", UNKNOWN_USER_ID),

@@ -5,7 +5,13 @@ from sqlalchemy import text
 
 from razzball_api.config import ConfigError, Settings
 from razzball_api.extensions import db
-from tests.conftest import AppFactory, auth_headers, request_log_rows
+from tests.conftest import (
+    FULL_KEY,
+    INACTIVE_KEY,
+    AppFactory,
+    auth_headers,
+    request_log_rows,
+)
 
 REQUIRED_ENV = {
     "RAZZBALL_BASEBALL_DATABASE_URL": "sqlite://",
@@ -188,6 +194,30 @@ def test_audit_failure_does_not_break_the_response(app: Flask) -> None:
     response = app.test_client().get("/nba/projections/all", headers=auth_headers())
 
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("key", "path", "status"),
+    [
+        (None, "/nba/projections/all", 401),
+        (INACTIVE_KEY, "/nba/projections/all", 403),
+        (FULL_KEY, "/no/such/path", 404),
+        (FULL_KEY, "/mlb/projections/daily/2026-06-01", 500),
+    ],
+)
+def test_failed_requests_are_audited(
+    app: Flask, key: str | None, path: str, status: int
+) -> None:
+    if status == 500:
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        with app.app_context(), db.engine.begin() as conn:
+            conn.execute(text("DROP TABLE APISOURCE_MLB"))
+
+    response = app.test_client().get(path, headers=auth_headers(key))
+
+    assert response.status_code == status
+    [row] = request_log_rows(app)
+    assert row["status_code"] == status
 
 
 def test_audit_can_be_disabled(make_app: AppFactory) -> None:
